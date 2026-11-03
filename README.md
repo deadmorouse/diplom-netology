@@ -27,6 +27,8 @@ GitHub Actions собирает приложение и доставляет е�
 Переменные `token`, `cloud_id`, `folder_id` задаются локально в `.tfvars`.
 Для bootstrap дополнительно нужен `bucket_name=tf-backend-igor`, для main —
 `public_key` с публичным SSH-ключом пользователя `ubuntu`.
+Для локального запуска `token` — действующий IAM-токен, полученный через
+`yc iam create-token` после авторизации CLI. В CI используется ключ сервисного аккаунта.
 
 ```bash
 terraform -chdir=terraform/bootstrap init
@@ -208,14 +210,30 @@ Workflow: [terraform.yml](.github/workflows/terraform.yml).
 |---|---|
 | `TF_STATE_ACCESS_KEY` | `terraform -chdir=terraform/bootstrap output -raw access_key` |
 | `TF_STATE_SECRET_KEY` | `terraform -chdir=terraform/bootstrap output -raw secret_key` |
-| `YC_TOKEN` | Действующий OAuth-токен из текущей локальной настройки Terraform; если CLI настроен через OAuth — `yc config get token` |
+| `YC_SERVICE_ACCOUNT_KEY` | Полное содержимое JSON-файла авторизованного ключа сервисного аккаунта Terraform |
 | `YC_CLOUD_ID` | `yc config get cloud-id` |
 | `YC_FOLDER_ID` | `yc config get folder-id` |
 | `VM_SSH_PUBLIC_KEY` | Содержимое текущего публичного SSH-ключа ВМ, например `~/.ssh/id_ed25519.pub` |
 
 Команды для ключей S3 выполняются там, где сохранён state bootstrap.
 Значения копируются в GitHub secrets; в репозиторий и скриншоты они не включаются.
-[Справка по настройкам Yandex CLI](https://yandex.cloud/en/docs/cli/cli-ref/config/cli-ref/).
+
+Авторизация CI в Yandex Cloud:
+
+1. В консоли Yandex Cloud создайте сервисный аккаунт `terraform-ci` в каталоге проекта.
+2. Назначьте этому аккаунту роли на каталог: `compute.editor`, `vpc.privateAdmin`
+   и `vpc.publicAdmin` для управления ВМ, сетью и внешними адресами.
+3. Откройте аккаунт → **Создать новый ключ → Создать авторизованный ключ**
+   и скачайте JSON-файл. Можно хранить локально в `.secrets/terraform-ci-key.json`;
+   этот каталог исключён из Git.
+4. Полное содержимое JSON добавьте в Repository secret `YC_SERVICE_ACCOUNT_KEY`.
+
+Workflow сохраняет JSON во временный файл с ограниченными правами и передаёт его
+провайдеру через `YC_SERVICE_ACCOUNT_KEY_FILE`. Провайдер получает IAM-токены автоматически.
+Старый secret `YC_TOKEN` больше не используется; ключи S3 остаются прежними.
+Аккаунт `tf-backend-sa` отвечает за S3, его роли для управления ВМ не расширяются.
+[Авторизация Terraform](https://yandex.cloud/ru/docs/terraform/authentication),
+[создание авторизованного ключа](https://yandex.cloud/ru/docs/iam/operations/authentication/manage-authorized-keys).
 
 Далее:
 

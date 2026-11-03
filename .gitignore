@@ -33,3 +33,4 @@ tfplan
 # Personal notes and command history
 /docs/
 /Decision.md
+/.secrets/
