@@ -29,3 +29,7 @@ tfplan
 *.key
 **/kubeconfig
 **/admin.conf
+
+# Personal notes and command history
+/docs/
+/Decision.md

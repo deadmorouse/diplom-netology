@@ -5,130 +5,86 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
   IMAGE: iksok/test-nginx-app
+  VERSION: ${{ github.ref_name }}
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      digest: ${{ steps.publish.outputs.digest }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Get source code
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check release tag
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Check release version
+        if: github.ref_type == 'tag'
         run: |
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || {
-            echo 'Use a release tag such as v1.0.0 or v1.0.0-rc.1'; exit 1;
-          }
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git merge-base --is-ancestor HEAD origin/main
 
       - name: Build image
-        run: |
-          docker build --pull \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            -t "$IMAGE:sha-$GITHUB_SHA" testapp
+        run: docker build --pull -t "$IMAGE:$GITHUB_SHA" testapp
 
-      - name: Test Nginx configuration and HTTP response
+      - name: Test Nginx and web page
         run: |
-          docker run --rm "$IMAGE:sha-$GITHUB_SHA" nginx -t
-          container=$(docker run -d "$IMAGE:sha-$GITHUB_SHA")
-          trap 'docker logs "$container"; docker rm -f "$container" >/dev/null' EXIT
-          ready=false
-          for attempt in {1..15}; do
-            if docker exec "$container" wget -q -O /tmp/response.html http://127.0.0.1/; then
-              ready=true
-              break
-            fi
-            sleep 1
-          done
-          test "$ready" = true
-          docker cp "$container:/tmp/response.html" "$RUNNER_TEMP/response.html"
+          docker run --rm "$IMAGE:$GITHUB_SHA" nginx -t
+          docker run -d --name app-test -p 127.0.0.1:8080:80 "$IMAGE:$GITHUB_SHA"
+          trap 'docker rm -f app-test' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 --max-time 10 \
+            http://127.0.0.1:8080/ -o "$RUNNER_TEMP/response.html"
           cmp testapp/index.html "$RUNNER_TEMP/response.html"
 
-      - name: Publish image
-        id: publish
+      - name: Log in to Docker Hub
         if: github.event_name == 'push'
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push image
+        id: push
+        if: github.event_name == 'push'
         run: |
-          : "${DOCKERHUB_USERNAME:?Set the DOCKERHUB_USERNAME repository secret}"
-          : "${DOCKERHUB_TOKEN:?Set the DOCKERHUB_TOKEN repository secret}"
-          export DOCKER_CONFIG="$RUNNER_TEMP/docker-auth"
-          mkdir -p "$DOCKER_CONFIG"
-          trap 'docker logout >/dev/null 2>&1 || true; rm -rf "$DOCKER_CONFIG"' EXIT
-          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
-          docker push "$IMAGE:sha-$GITHUB_SHA"
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:$RELEASE_TAG"
-            docker push "$IMAGE:$RELEASE_TAG"
+          docker push "$IMAGE:$GITHUB_SHA"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            docker tag "$IMAGE:$GITHUB_SHA" "$IMAGE:$VERSION"
+            docker push "$IMAGE:$VERSION"
           fi
-          image_ref=$(docker image inspect "$IMAGE:sha-$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
-          [[ "$image_ref" == "$IMAGE@sha256:"* ]]
-          # A full image ref contains DOCKERHUB_USERNAME, so GitHub may redact
-          # that job output as a secret. Pass only the public content hash.
-          digest=${image_ref#*@}
-          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "Published digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          image_ref=$(docker image inspect "$IMAGE:$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
+          echo "digest=${image_ref#*@}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
     concurrency:
       group: deploy-test-app
       cancel-in-progress: false
     env:
-      DEPLOY_IMAGE: iksok/test-nginx-app@${{ needs.build.outputs.digest }}
-      RELEASE_TAG: ${{ github.ref_name }}
+      DIGEST: ${{ needs.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Get Kubernetes manifests
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Check published image digest
+      - name: Deploy application
         run: |
-          [[ "$DEPLOY_IMAGE" =~ ^iksok/test-nginx-app@sha256:[a-f0-9]{64}$ ]] || {
-            echo '::error::Build did not return a valid image digest'; exit 1;
-          }
-
-      - name: Check runner and Kubernetes access
-        run: |
-          test "$(hostname -s)" = node-0
-          kubectl --request-timeout=10s get nodes
-          kubectl --request-timeout=10s auth can-i patch deployments -n test-app
-
-      - name: Deploy tested image
-        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/service.yaml -f k8s/ingress.yaml
           kubectl set image --local -f k8s/deployment.yaml \
-            nginx-app="$DEPLOY_IMAGE" -o yaml | kubectl apply -f -
-          kubectl -n test-app annotate deployment/nginx-app \
-            kubernetes.io/change-cause="$RELEASE_TAG ($GITHUB_SHA)" --overwrite
+            nginx-app="$IMAGE@$DIGEST" -o yaml | kubectl apply -f -
           kubectl -n test-app rollout status deployment/nginx-app --timeout=180s
-          kubectl -n test-app get deployment,pods,service,ingress -o wide
-          printf 'Release: `%s`\n\nImage: `%s`\n' "$RELEASE_TAG" "$DEPLOY_IMAGE" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Show rollout diagnostics on failure
-        if: failure()
-        run: |
-          kubectl --request-timeout=10s -n test-app get pods -o wide
-          kubectl --request-timeout=10s -n test-app get events --sort-by=.lastTimestamp
+          kubectl -n test-app get pods -o wide

@@ -1,329 +1,182 @@
-# Диплом DevOps: Kubernetes в Yandex Cloud
+# Диплом DevOps в Yandex Cloud
 
-Репозиторий: [deadmorouse/diplom-netology](https://github.com/deadmorouse/diplom-netology).
-Образ приложения: `iksok/test-nginx-app` в Docker Hub.
-Исходное задание: [docs/ASSIGNMENT.md](docs/ASSIGNMENT.md).
+[Репозиторий проекта](https://github.com/deadmorouse/diplom-netology) ·
+[Docker Hub](https://hub.docker.com/r/iksok/test-nginx-app)
 
-## 1. Архитектура и состояние стенда
+Terraform создаёт инфраструктуру, Kubespray устанавливает Kubernetes,
+GitHub Actions собирает приложение и доставляет его в кластер.
+Мониторинг реализован через Prometheus и Grafana.
 
-```text
-Terraform → Yandex Cloud: VPC, подсеть, 3 ВМ
-                          └─ Kubernetes (Kubespray, containerd, Calico)
-Интернет → NodePort 30126 → ingress-nginx → nginx-app (2 реплики)
-                                        └─ Grafana (Host: grafana.local)
-GitHub push → hosted runner → build → HTTP test → Docker Hub
-GitHub tag v1.0.0 → проверки → Docker Hub → runner node-0 → Kubernetes
-```
+В примерах `masterip`, `workip1`, `workip2` заменяются актуальными адресами из
+`ansible/prod.yaml` или `terraform output`.
 
-Проверено 3 ноября 2026 года: три узла `Ready`, приложение — `2/2`,
-служба runner активна, подключена к GitHub и имеет доступ к Kubernetes.
-Push в `main` прошёл CI: образ опубликован в Docker Hub, оба Terraform-модуля
-прошли проверки. [Релиз v1.0.1](https://github.com/deadmorouse/diplom-netology/actions/runs/41614241444)
-успешно развёрнут через runner node-0: Deployment `2/2`, внешний HTTP-ответ успешен.
+| Узел | Назначение | Адрес в примерах |
+|---|---|---|
+| node-0 | Kubernetes control plane, GitHub runner | masterip |
+| node-1 | worker | workip1 |
+| node-2 | worker | workip2 |
 
-| Узел | Роль | Внешний IP из inventory | Внутренний IP при обследовании |
-|---|---|---|---|
-| node-0 | control plane, etcd, GitHub runner | 62.84.125.162 | 10.0.1.12 |
-| node-1 | worker | 62.84.125.111 | 10.0.1.13 |
-| node-2 | worker | 62.84.126.188 | 10.0.1.25 |
+## 1. Создание инфраструктуры
 
-SSH: `ubuntu`, вход по ключу. Внешние адреса динамические: после остановки ВМ
-сверяйте `terraform output` и [ansible/prod.yaml](ansible/prod.yaml).
+Конфигурация разделена на два модуля:
 
-Установленные версии: Ubuntu 22.04.5, Kubernetes 1.35.3, containerd 2.2.2,
-Calico 3.30.7 (VXLAN). Helm charts: ingress-nginx 4.15.1 и kube-prometheus-stack 86.2.2.
+- `terraform/bootstrap` — сервисный аккаунт и S3 bucket для Terraform state.
+- `terraform/main` — сеть и три виртуальные машины.
 
-## 2. Структура проекта
-
-| Путь | Назначение |
-|---|---|
-| `terraform/bootstrap/` | Сервисный аккаунт, статический ключ и bucket для state |
-| `terraform/main/` | Сеть, подсеть и три ВМ |
-| `ansible/prod.yaml` | Inventory для проверки SSH/Ansible |
-| `testapp/` | Dockerfile, nginx.conf, index.html |
-| `k8s/` | Namespace, Deployment, Service, Ingress приложения |
-| `monitoring/grafana-ingress.yaml` | Публикация Grafana |
-| `.github/workflows/app.yml` | Сборка, проверка, публикация и деплой приложения |
-| `.github/workflows/terraform.yml` | Проверки Terraform, plan и apply |
-| `docs/COMMANDS.md` | Журнал команд, требующих разрешения |
-| `screenshots/` | Скриншоты отчёта |
-
-Далее шаги описаны в порядке создания стенда. На работающем стенде используйте
-команды проверки; повторная установка нужна только при восстановлении.
-Добавляйте скриншоты под соответствующими шагами, раскомментировав Markdown-ссылки.
-
-## 3. Terraform: backend и инфраструктура
-
-Локально использовался Terraform 1.10.1. Версии провайдеров закреплены в
-`.terraform.lock.hcl`. State, ключи и локальные `.tfvars` в Git не включаются.
-
-Для `terraform/bootstrap` задайте `token`, `cloud_id`, `folder_id`,
-`bucket_name=tf-backend-igor` в локальном `.tfvars` или переменных `TF_VAR_*`.
+Используется Terraform 1.10.1. Версии провайдеров сохранены в `.terraform.lock.hcl`.
+Переменные `token`, `cloud_id`, `folder_id` задаются локально в `.tfvars`.
+Для bootstrap дополнительно нужен `bucket_name=tf-backend-igor`, для main —
+`public_key` с публичным SSH-ключом пользователя `ubuntu`.
 
 ```bash
 terraform -chdir=terraform/bootstrap init
 terraform -chdir=terraform/bootstrap plan
 terraform -chdir=terraform/bootstrap apply
-```
 
-Создаётся аккаунт `tf-backend-sa` с ролью `storage.editor` для S3.
-Он не получает права управления ВМ. Авторизация провайдера для работы с
-инфраструктурой задаётся отдельно переменной `token`.
-
-Ключи backend передаются через окружение:
-
-```bash
 export AWS_ACCESS_KEY_ID="$(terraform -chdir=terraform/bootstrap output -raw access_key)"
 export AWS_SECRET_ACCESS_KEY="$(terraform -chdir=terraform/bootstrap output -raw secret_key)"
-```
 
-Основной модуль использует bucket `tf-backend-igor`, ключ `terraform/state.tfstate`.
-Для него нужны `token`, `cloud_id`, `folder_id`, `public_key` — содержимое публичного
-SSH-ключа пользователя `ubuntu`. При смене bucket обновите backend в providers.tf.
-
-```bash
 terraform -chdir=terraform/main init
 terraform -chdir=terraform/main plan
 terraform -chdir=terraform/main apply
 terraform -chdir=terraform/main output
 ```
 
-Создаются три прерываемые ВМ `standard-v3`: 4 vCPU, 4 GB RAM, доля CPU 20%,
-диск 30 GB. Текущая подсеть — `10.0.1.0/24`, зона `ru-central1-a`.
+State основного модуля хранится в bucket `tf-backend-igor`, объект `terraform/state.tfstate`.
+Локальные state, `.tfvars` и ключи не публикуются в Git.
 
-**Скриншот 01:** созданный bucket в Object Storage, без ключей доступа.
+**Скриншоты:** bucket, успешный Terraform apply и три ВМ в Yandex Cloud.
 <!-- ![Backend](screenshots/01-backend.png) -->
-Файл: `screenshots/01-backend.png`.
-
-**Скриншот 02:** успешный `terraform apply` и `terraform output`.
 <!-- ![Terraform](screenshots/02-terraform.png) -->
-Файл: `screenshots/02-terraform.png`.
-
-**Скриншот 03:** три ВМ в консоли Yandex Cloud с именами и адресами.
 <!-- ![Виртуальные машины](screenshots/03-vm.png) -->
-Файл: `screenshots/03-vm.png`.
 
-## 4. Доступ к узлам и Kubernetes
+## 2. Ansible и Kubernetes
+
+Развёртывание Kubernetes реализовано через **Kubespray на базе Ansible**.
+Узлы проекта и подключения под пользователем `ubuntu` описаны в inventory
+[`ansible/prod.yaml`](ansible/prod.yaml).
+
+Проверка доступности узлов:
 
 ```bash
 ansible -i ansible/prod.yaml all -m ping
-ssh ubuntu@62.84.125.162
+ssh ubuntu@masterip
 ```
 
-Кластер установлен через Kubespray, commit
-`65352fef396a4ddd319682e74acb3bb208ba8ff7`.
-Использованный checkout найден в соседнем проекте:
-`../devops-netology-diplom-yc-main/ansible/kubespray`.
-Inventory: `inventory/mycluster/hosts.yml`, настройки: `inventory/mycluster/group_vars/`.
-Внешние адреса этого inventory требуют актуализации перед повторным запуском.
-
-Команда установки из каталога **этого Kubespray checkout**:
-
-```bash
-ansible-playbook -i inventory/mycluster/hosts.yml -u ubuntu -b cluster.yml
-```
-
-`ansible/prod.yaml` — обычный inventory для проверки доступа, он не заменяет
-inventory Kubespray. Старый `k8s-cluster.yaml` удалён. Обёртки Kubespray в проект
-не включены. Повторная установка требует сохранённого внешнего checkout с настройками.
-
-На node-0 уже настроен kubeconfig пользователя runner:
+Установлены Kubernetes 1.35.3, containerd и Calico.
+Проверка кластера на master под пользователем с настроенным kubeconfig:
 
 ```bash
 sudo -H -u github-runner kubectl get nodes -o wide
 sudo -H -u github-runner kubectl get pods -A
 ```
 
-Для дальнейших команд `kubectl` и `helm` нужен доступ к API кластера.
-В SSH-сессии `ubuntu` можно использовать установленный административный kubeconfig:
+Дальнейшие команды `kubectl` и `helm` выполняются с доступом к этому кластеру.
+Манифесты применяются из корня проекта.
 
-```bash
-sudo -i
-export KUBECONFIG=/etc/kubernetes/admin.conf
-kubectl get nodes
-kubectl get pods -A
-```
-
-Манифесты ниже применяются из корня checkout проекта на машине с доступом к API.
-
-**Скриншот 04:** `kubectl get nodes -o wide` и системные Pod в состоянии Running.
+**Скриншот:** три узла Ready и системные Pod.
 <!-- ![Kubernetes](screenshots/04-kubernetes.png) -->
-Файл: `screenshots/04-kubernetes.png`.
 
-## 5. Приложение и Docker Hub
+## 3. Тестовое приложение
 
-Nginx отдаёт `testapp/index.html` на порту 80. Базовый образ — `nginx:1.28-alpine`.
+В `testapp/` находятся Dockerfile, конфигурация Nginx и HTML-страница.
+Приложение показывает `this is ver1.0.1`.
 
 ```bash
-docker build -t iksok/test-nginx-app:local testapp
-docker run --rm iksok/test-nginx-app:local nginx -t
-docker run --rm -p 8080:80 iksok/test-nginx-app:local
+docker build -t iksok/test-nginx-app:v1.0.1 testapp
+docker run --rm iksok/test-nginx-app:v1.0.1 nginx -t
+docker run --rm -p 8080:80 iksok/test-nginx-app:v1.0.1
 ```
 
-В другом терминале: `curl -f http://localhost:8080/`.
-До первого CI/CD-релиза на стенде работает `iksok/test-nginx-app:v1`.
-Репозиторий образов должен быть публичным для скачивания узлами без `imagePullSecret`.
+Страница доступна локально на `http://localhost:8080`.
+Образы публикуются в публичный Docker Hub repository `iksok/test-nginx-app`.
 
-**Скриншот 05:** Docker Hub, репозиторий `iksok/test-nginx-app` и опубликованные теги.
+**Скриншот:** Docker Hub с опубликованным тегом версии.
 <!-- ![Docker Hub](screenshots/05-dockerhub.png) -->
-Файл: `screenshots/05-dockerhub.png`.
 
-## 6. Ingress и публикация приложения
+## 4. Доступ к приложению через Ingress
 
-На стенде установлен release `ingress-nginx`, chart 4.15.1.
-Для новой установки команда закрепляет используемые NodePort:
+Для входящего HTTP-трафика используется ingress-nginx, Helm chart 4.15.1:
 
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-  --version 4.15.1 --namespace ingress-nginx --create-namespace \
+  --version 4.15.1 -n ingress-nginx --create-namespace \
   --set controller.service.nodePorts.http=30126 \
   --set controller.service.nodePorts.https=32284
-kubectl get svc -n ingress-nginx
 ```
 
-Тип сервиса — `LoadBalancer`; внешний балансировщик не подключён, поэтому
-`EXTERNAL-IP` остаётся `pending`. Для HTTP используется NodePort 30126.
-
-Первичная установка приложения:
+Первичное развёртывание приложения:
 
 ```bash
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/ingress.yaml
-kubectl -n test-app rollout status deployment/nginx-app --timeout=180s
-kubectl -n test-app get deployment,pods,svc,ingress -o wide
-curl -f http://62.84.125.111:30126/
+kubectl -n test-app get deployment,pods,svc,ingress
 ```
 
-Ingress `test-nginx` направляет запросы на **Service `nginx-app:80`**.
-Deployment запускает две реплики с меткой `app: nginx-app`.
-После перехода на CI/CD новые версии доставляются через release tags;
-повторный apply статического deployment.yaml вернёт образ `v1`.
+Deployment `nginx-app` запускает две реплики. Ingress направляет запросы
+на Service `nginx-app:80`. Последующие обновления выполняются через CI/CD.
 
-**Скриншот 06:** Service контроллера с NodePort и две реплики приложения.
+Приложение: **http://workip1:30126**.
+
+**Скриншоты:** ресурсы приложения и страница в браузере.
 <!-- ![Ingress и приложение](screenshots/06-ingress-app.png) -->
-Файл: `screenshots/06-ingress-app.png`.
+<!-- ![Страница приложения](screenshots/07-app-browser.png) -->
 
-**Скриншот 07:** страница приложения в браузере с адресной строкой.
-<!-- ![Приложение](screenshots/07-app-browser.png) -->
-Файл: `screenshots/07-app-browser.png`.
+## 5. Мониторинг
 
-## 7. Мониторинг
-
-Release `monitoring`, chart `kube-prometheus-stack` 86.2.2 включает Prometheus,
-Grafana, Alertmanager, Prometheus Operator, kube-state-metrics и node-exporter.
-Базовая установка нового стенда:
+Используется Helm chart `kube-prometheus-stack` 86.2.2:
+Prometheus, Grafana, Alertmanager, kube-state-metrics и node-exporter.
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-  --version 86.2.2 --namespace monitoring --create-namespace
+  --version 86.2.2 -n monitoring --create-namespace
 kubectl apply -f monitoring/grafana-ingress.yaml
+kubectl get pods -n monitoring
 ```
 
-Проверка фактической установки и её пользовательских настроек:
-
-```bash
-helm list -A
-helm get values monitoring -n monitoring
-helm get values ingress-nginx -n ingress-nginx
-kubectl get pods,svc -n monitoring
-kubectl get daemonset -n monitoring
-```
-
-Отдельный экспорт пользовательских Helm values пока не сохранён в проекте.
-Перед восстановлением учитывайте вывод `helm get values`.
-
-На компьютере с браузером добавьте в hosts:
+На компьютере с браузером добавляется запись в `/etc/hosts`
+(вместо `workip1` — настоящий IP worker-1):
 
 ```text
-62.84.125.111 grafana.local
+workip1 grafana.local
 ```
 
-Grafana: **http://grafana.local:30126**. Логин `admin`, пароль из Secret:
+Grafana: **http://grafana.local:30126**, логин `admin`.
+Получить пароль:
 
 ```bash
 kubectl -n monitoring get secret monitoring-grafana \
   -o jsonpath='{.data.admin-password}' | base64 -d
 ```
 
-Пароль не включается в отчёт. Проверка маршрута:
-
-```bash
-curl -f -H 'Host: grafana.local' http://62.84.125.111:30126/api/health
-```
-
-**Скриншот 08:** Pod мониторинга и DaemonSet node-exporter на трёх узлах.
+**Скриншоты:** компоненты мониторинга и dashboard Grafana с графиками.
 <!-- ![Мониторинг](screenshots/08-monitoring.png) -->
-Файл: `screenshots/08-monitoring.png`.
-
-**Скриншот 09:** Grafana, Kubernetes dashboard с непустыми графиками CPU/памяти.
 <!-- ![Grafana](screenshots/09-grafana.png) -->
-Файл: `screenshots/09-grafana.png`.
 
-## 8. GitHub Actions: приложение
+## 6. CI/CD приложения
 
-Workflow: [.github/workflows/app.yml](.github/workflows/app.yml).
+Workflow: [app.yml](.github/workflows/app.yml).
 
-| Событие | Результат |
+| Событие | Действия |
 |---|---|
-| Pull request | Сборка, `nginx -t`, HTTP-проверка содержимого страницы |
-| Push в ветку | Проверки и публикация `sha-<полный SHA коммита>` |
-| Push тега `v1.0.0` / `v1.0.0-rc.1` | Проверки, публикация SHA и version tag, деплой |
-| Run workflow | Только сборка и проверки, без публикации и деплоя |
+| Pull request | Сборка и проверка приложения |
+| Push в ветку | Сборка, проверка, публикация образа с SHA коммита |
+| Push тега `v1.0.1` | Сборка, проверка, публикация версии и деплой в Kubernetes |
 
-Сборка выполняется на GitHub-hosted `ubuntu-24.04`. Релизный commit должен входить
-в историю `main`. Job `deploy` выполняется на self-hosted runner `node-0` под
-пользователем `github-runner`, устанавливает проверенный образ по digest и ждёт rollout.
-При ошибке выводит состояние Pod и события namespace. Деплои сериализуются
-группой concurrency `deploy-test-app`.
+Сборка выполняется на GitHub-hosted runner. Деплой — на self-hosted runner `node-0`,
+который уже имеет доступ к Kubernetes. Для точного выбора собранного образа используется digest.
+Версии имеют формат `vX.Y.Z`, без суффиксов.
 
-### Настройки и доступы
+В **Settings → Secrets and variables → Actions → Repository secrets** добавляются:
 
-В `deadmorouse/diplom-netology`: **Settings → Secrets and variables → Actions →
-Repository secrets**.
+- `DOCKERHUB_USERNAME` — `iksok`.
+- `DOCKERHUB_TOKEN` — Docker Hub Access Token с правом записи.
 
-| Secret | Значение |
-|---|---|
-| `DOCKERHUB_USERNAME` | `iksok` |
-| `DOCKERHUB_TOKEN` | Docker Hub Access Token с правом записи |
-
-Владелец добавил оба секрета; сборка и публикация образа в первом workflow успешны.
-Environment secrets не используются.
-
-Runner зарегистрирован для этого репозитория. Служба:
-`actions.runner.deadmorouse-diplom-netology.node-0.service`.
-Каталог: `/home/github-runner/actions-runner`.
-В **Settings → Actions → Runners** ожидаются статус `Idle` и метки
-`self-hosted`, `Linux`, `X64`.
-
-```bash
-sudo systemctl status actions.runner.deadmorouse-diplom-netology.node-0.service
-sudo -H -u github-runner kubectl get nodes
-sudo -H -u github-runner kubectl auth can-i patch deployments -n test-app
-```
-
-Kubeconfig уже настроен у `github-runner`; передавать его через GitHub secret не нужно.
-Проверенный клиентский сертификат действует до 8 апреля 2027 года, 23:05 UTC.
-Смена внешнего IP не требует перерегистрации runner, если сохранены исходящий
-доступ к GitHub и внутренний доступ к API кластера.
-
-### Запуск и проверка
-
-Первый [Application CI/CD на main](https://github.com/deadmorouse/diplom-netology/actions/runs/41612247682)
-успешно собрал, проверил и опубликовал образ для commit `4b787bb`.
-При следующих push результат проверяется во вкладке Actions, образ получает тег `sha-…`.
-Для дальнейшей работы используйте отдельный checkout **именно `deadmorouse/diplom-netology`**:
-
-```bash
-git clone git@github.com:deadmorouse/diplom-netology.git
-cd diplom-netology
-```
-
-Теги `v1.0.0` и `v1.0.1` уже существуют. Первый успешный деплой — `v1.0.1`;
-для следующего релиза после отправки изменений в main:
+После отправки изменений в main новый релиз создаётся тегом:
 
 ```bash
 git switch main
@@ -332,94 +185,59 @@ git tag v1.0.2
 git push origin v1.0.2
 ```
 
-Каждый релиз получает новый тег. После завершения `deploy`:
+Проверка результата:
 
 ```bash
 kubectl -n test-app rollout status deployment/nginx-app --timeout=180s
-kubectl -n test-app get deployment nginx-app \
-  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-kubectl -n test-app rollout history deployment/nginx-app
-curl -f http://62.84.125.111:30126/
+kubectl -n test-app get pods
+curl -f http://workip1:30126/
 ```
 
-Image должен иметь вид `iksok/test-nginx-app@sha256:…` и совпадать с выводом job `build`.
-Для демонстрации обновления измените HTML, отправьте commit и создайте новый version tag.
-
-Подтверждённый релиз `v1.0.1`, commit `8d8bee1`:
-
-```text
-iksok/test-nginx-app@sha256:d2db7ab2fad627bb38ae868d5276b265b5d6d6a8dca4463fe56105abfd2f31e6
-```
-
-[Успешный workflow сборки и деплоя](https://github.com/deadmorouse/diplom-netology/actions/runs/41614241444).
-Между jobs передаётся только хеш: полный image reference содержит Docker Hub username,
-сохранённый как secret, и может быть отфильтрован GitHub при передаче outputs.
-
-**Скриншот 10:** runner `node-0` со статусом `Idle`.
+**Скриншоты:** runner, успешные jobs build/deploy и обновлённая страница.
 <!-- ![Runner](screenshots/10-runner.png) -->
-Файл: `screenshots/10-runner.png`.
-
-**Скриншот 11:** успешный workflow release tag, jobs `build` и `deploy`.
 <!-- ![GitHub Actions](screenshots/11-actions.png) -->
-Файл: `screenshots/11-actions.png`.
+<!-- ![Новая версия](screenshots/12-release.png) -->
 
-**Скриншот 12:** новый digest в Deployment, успешный rollout и обновлённая страница.
-<!-- ![Релиз](screenshots/12-release.png) -->
-Файл: `screenshots/12-release.png`.
+## 7. Terraform через GitHub Actions
 
-## 9. GitHub Actions: Terraform
+Workflow: [terraform.yml](.github/workflows/terraform.yml).
+Проверки `fmt`, `init` и `validate` уже работают. Для plan/apply добавьте секреты
+в **Settings → Secrets and variables → Actions → New repository secret**:
 
-Workflow: [.github/workflows/terraform.yml](.github/workflows/terraform.yml).
-Оба модуля проходят `fmt`, `init -backend=false`, `validate` без облачных секретов.
-[Первый запуск проверок успешен](https://github.com/deadmorouse/diplom-netology/actions/runs/41612247670).
-Автоматизация основной инфраструктуры включается после настройки доступа к существующему state.
-
-Дополнительные Repository secrets:
-
-| Secret | Назначение |
+| Secret | Откуда взять значение |
 |---|---|
-| `TF_STATE_ACCESS_KEY` | Статический access key аккаунта S3 |
-| `TF_STATE_SECRET_KEY` | Соответствующий secret key |
-| `YC_TOKEN` | Действующий токен Yandex Cloud для провайдера |
-| `YC_CLOUD_ID` | ID облака |
-| `YC_FOLDER_ID` | ID каталога |
-| `VM_SSH_PUBLIC_KEY` | Текущий публичный SSH-ключ ВМ одной строкой |
+| `TF_STATE_ACCESS_KEY` | `terraform -chdir=terraform/bootstrap output -raw access_key` |
+| `TF_STATE_SECRET_KEY` | `terraform -chdir=terraform/bootstrap output -raw secret_key` |
+| `YC_TOKEN` | Действующий OAuth-токен из текущей локальной настройки Terraform; если CLI настроен через OAuth — `yc config get token` |
+| `YC_CLOUD_ID` | `yc config get cloud-id` |
+| `YC_FOLDER_ID` | `yc config get folder-id` |
+| `VM_SSH_PUBLIC_KEY` | Содержимое текущего публичного SSH-ключа ВМ, например `~/.ssh/id_ed25519.pub` |
 
-В **Actions → Variables** добавьте Repository variable `TF_AUTOMATION_ENABLED=true`.
-Выполните **Actions → Terraform → Run workflow** на `main`: ручной запуск делает
-только plan. Сверьте, что используется существующий state и план не предлагает
-неожиданного пересоздания работающего стенда.
+Команды для ключей S3 выполняются там, где сохранён state bootstrap.
+Значения копируются в GitHub secrets; в репозиторий и скриншоты они не включаются.
+[Справка по настройкам Yandex CLI](https://yandex.cloud/en/docs/cli/cli-ref/config/cli-ref/).
 
-Последующие push в `main` запускают plan и apply сохранённого плана.
-Настройки `zone`, `cidr`, `ubuntu_image` берутся из defaults кода: локальные `.tfvars`
-в GitHub не попадают. Их отличия нужно перенести в несекретную конфигурацию до включения.
-Bootstrap автоматически не применяется. План удаляется в конце job, в artifacts не выгружается.
-Concurrency исключает параллельные запуски этого job; параллельный локальный apply
-следует исключить отдельно.
+Далее:
 
-**Скриншот 13:** успешные Terraform validation, plan и apply в GitHub Actions.
+1. В **Actions → Variables → New repository variable** создайте `TF_AUTOMATION_ENABLED`
+   со значением `true`.
+2. Откройте **Actions → Terraform → Run workflow**, выберите `main`.
+   Ручной запуск выполнит проверки и **plan без apply**.
+3. Проверьте план: он должен использовать существующий state в S3. Значения
+   локальных `.tfvars`, отсутствующие в GitHub, должны совпадать с defaults проекта.
+4. После успешного plan отправьте commit в main. Для проверки без изменения файлов:
+
+   ```bash
+   git commit --allow-empty -m "Verify Terraform automatic apply"
+   git push origin main
+   ```
+
+5. В новом запуске откройте job `infrastructure`: шаг **Apply on main push** должен
+   завершиться успешно. Если изменений нет, результат `No changes` тоже подтверждает
+   успешную проверку и применение текущей конфигурации.
+
+После включения каждый push в main запускает автоматический plan/apply основного
+модуля. Bootstrap остаётся отдельным подготовительным этапом.
+
+**Скриншот:** успешный job infrastructure с шагами plan и apply.
 <!-- ![Terraform Actions](screenshots/13-terraform-actions.png) -->
-Файл: `screenshots/13-terraform-actions.png`.
-
-## 10. Что осталось подтвердить перед сдачей
-
-- Добавить скриншоты уже работающих сборки, публикации и релизного деплоя.
-- Настроить отдельные секреты Terraform и подтвердить автоматический apply.
-- В задании указаны подсети в разных зонах. Текущий Terraform создаёт одну подсеть
-  в одной зоне; это расхождение ещё не устранено.
-- Inventory Kubespray находится вне репозитория. Для автономного воспроизведения
-  его вместе с настройками потребуется включить в сдаваемые материалы.
-- Один control plane и один etcd — стенд не отказоустойчивый; все ВМ прерываемые.
-
-Этот README — актуальное описание. `Decision.md` сохранён как прежний черновик
-и может содержать устаревшие пути и заявления о ещё не проверенных этапах.
-
-## 11. Команды и справка
-
-Команды с запросом разрешения заранее записываются в [docs/COMMANDS.md](docs/COMMANDS.md),
-диагностические скрипты — в `docs/commands/`. Исторические записи сохраняют
-адреса, действовавшие на момент проверки.
-
-- [Checkout action](https://github.com/actions/checkout)
-- [Terraform setup action](https://github.com/hashicorp/setup-terraform)
-- [Проверка self-hosted runner](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/monitor-and-troubleshoot)
