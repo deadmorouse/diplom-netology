@@ -237,4 +237,30 @@ GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownH
 python3 docs/commands/github-actions-status.py
 ```
 
+## 19. Проверка приложения после релиза
+
+Чтение состояния кластера и HTTP-ответа после автоматического deploy.
+
+```bash
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=51.250.73.47 -o UserKnownHostsFile=/tmp/diploma-ssh-check-not7380c/known_hosts-all -o ConnectTimeout=7 ubuntu@62.84.125.162 'bash -s' < docs/commands/check-cicd-access.sh
+curl --fail --connect-timeout 5 --max-time 15 http://62.84.125.111:30126/
+python3 docs/commands/github-actions-status.py
+```
+
+Результат разделов 18–19: релиз `v1.0.1`, commit `8d8bee1`, run `41614241444`
+успешен (build и deploy). Три узла Ready, Deployment 2/2, HTTP-проверка успешна.
+Применён image `iksok/test-nginx-app@sha256:d2db7ab2fad627bb38ae868d5276b265b5d6d6a8dca4463fe56105abfd2f31e6`.
+
+## 20. Публикация итогового отчёта и журнала
+
+Обновлены только README и этот журнал: записан проверенный релиз, ссылка на Actions,
+digest и команда следующего релиза. Push в main запускает CI, без повторного deploy.
+Публикация выполняется из `/tmp/diploma-publish-20261103`; Git-конфигурация родительского
+репозитория `/home/iks/devops-netology` не изменялась.
+
+```bash
+GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/diploma-github-known-hosts -o ConnectTimeout=10' git -C /tmp/diploma-publish-20261103 push origin main
+python3 docs/commands/github-actions-status.py
+```
+
 <!-- NEXT COMMAND -->

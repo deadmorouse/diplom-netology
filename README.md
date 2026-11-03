@@ -17,8 +17,9 @@ GitHub tag v1.0.0 → проверки → Docker Hub → runner node-0 → Kube
 
 Проверено 3 ноября 2026 года: три узла `Ready`, приложение — `2/2`,
 служба runner активна, подключена к GitHub и имеет доступ к Kubernetes.
-Первый push в `main` прошёл CI: образ опубликован в Docker Hub, оба Terraform-модуля
-прошли проверки. Релизный деплой проверяется отдельно ниже.
+Push в `main` прошёл CI: образ опубликован в Docker Hub, оба Terraform-модуля
+прошли проверки. [Релиз v1.0.1](https://github.com/deadmorouse/diplom-netology/actions/runs/41614241444)
+успешно развёрнут через runner node-0: Deployment `2/2`, внешний HTTP-ответ успешен.
 
 | Узел | Роль | Внешний IP из inventory | Внутренний IP при обследовании |
 |---|---|---|---|
@@ -314,17 +315,24 @@ Kubeconfig уже настроен у `github-runner`; передавать ег
 Первый [Application CI/CD на main](https://github.com/deadmorouse/diplom-netology/actions/runs/41612247682)
 успешно собрал, проверил и опубликовал образ для commit `4b787bb`.
 При следующих push результат проверяется во вкладке Actions, образ получает тег `sha-…`.
-Затем из checkout **именно `deadmorouse/diplom-netology`**:
+Для дальнейшей работы используйте отдельный checkout **именно `deadmorouse/diplom-netology`**:
+
+```bash
+git clone git@github.com:deadmorouse/diplom-netology.git
+cd diplom-netology
+```
+
+Теги `v1.0.0` и `v1.0.1` уже существуют. Первый успешный деплой — `v1.0.1`;
+для следующего релиза после отправки изменений в main:
 
 ```bash
 git switch main
 git pull --ff-only
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
-Для следующего релиза используйте новый тег, например `v1.0.1`.
-После завершения `deploy`:
+Каждый релиз получает новый тег. После завершения `deploy`:
 
 ```bash
 kubectl -n test-app rollout status deployment/nginx-app --timeout=180s
@@ -336,6 +344,16 @@ curl -f http://62.84.125.111:30126/
 
 Image должен иметь вид `iksok/test-nginx-app@sha256:…` и совпадать с выводом job `build`.
 Для демонстрации обновления измените HTML, отправьте commit и создайте новый version tag.
+
+Подтверждённый релиз `v1.0.1`, commit `8d8bee1`:
+
+```text
+iksok/test-nginx-app@sha256:d2db7ab2fad627bb38ae868d5276b265b5d6d6a8dca4463fe56105abfd2f31e6
+```
+
+[Успешный workflow сборки и деплоя](https://github.com/deadmorouse/diplom-netology/actions/runs/41614241444).
+Между jobs передаётся только хеш: полный image reference содержит Docker Hub username,
+сохранённый как secret, и может быть отфильтрован GitHub при передаче outputs.
 
 **Скриншот 10:** runner `node-0` со статусом `Idle`.
 <!-- ![Runner](screenshots/10-runner.png) -->
@@ -385,8 +403,7 @@ Concurrency исключает параллельные запуски этог�
 
 ## 10. Что осталось подтвердить перед сдачей
 
-- Опубликовать workflow в целевом репозитории, подтвердить сборку, публикацию и
-  релизный деплой в Actions; добавить скриншоты.
+- Добавить скриншоты уже работающих сборки, публикации и релизного деплоя.
 - Настроить отдельные секреты Terraform и подтвердить автоматический apply.
 - В задании указаны подсети в разных зонах. Текущий Terraform создаёт одну подсеть
   в одной зоне; это расхождение ещё не устранено.
