@@ -1,0 +1,31 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
+# Secrets
+*.auto.tfvars
+
+# Ansible
+*.retry
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Local deployment credentials and plans
+*.tfplan
+tfplan
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/kubeconfig
+**/admin.conf
