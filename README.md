@@ -203,7 +203,9 @@ curl -f http://workip1:30126/
 ## 7. Terraform через GitHub Actions
 
 Workflow: [terraform.yml](.github/workflows/terraform.yml).
-Проверки `fmt`, `init` и `validate` уже работают. Для plan/apply добавьте секреты
+Проверены `fmt`, `init`, `validate`, plan и автоматический apply после push в main.
+[Успешный запуск Terraform с apply](https://github.com/deadmorouse/diplom-netology/actions/runs/41695661905).
+Для настройки plan/apply добавьте секреты
 в **Settings → Secrets and variables → Actions → New repository secret**:
 
 | Secret | Откуда взять значение |
