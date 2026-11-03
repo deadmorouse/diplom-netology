@@ -78,10 +78,14 @@ jobs:
             docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:$RELEASE_TAG"
             docker push "$IMAGE:$RELEASE_TAG"
           fi
-          digest=$(docker image inspect "$IMAGE:sha-$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
-          [[ "$digest" == "$IMAGE@sha256:"* ]]
+          image_ref=$(docker image inspect "$IMAGE:sha-$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
+          [[ "$image_ref" == "$IMAGE@sha256:"* ]]
+          # A full image ref contains DOCKERHUB_USERNAME, so GitHub may redact
+          # that job output as a secret. Pass only the public content hash.
+          digest=${image_ref#*@}
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "Published: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -92,17 +96,22 @@ jobs:
       group: deploy-test-app
       cancel-in-progress: false
     env:
-      DEPLOY_IMAGE: ${{ needs.build.outputs.digest }}
+      DEPLOY_IMAGE: iksok/test-nginx-app@${{ needs.build.outputs.digest }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
+      - name: Check published image digest
+        run: |
+          [[ "$DEPLOY_IMAGE" =~ ^iksok/test-nginx-app@sha256:[a-f0-9]{64}$ ]] || {
+            echo '::error::Build did not return a valid image digest'; exit 1;
+          }
+
       - name: Check runner and Kubernetes access
         run: |
           test "$(hostname -s)" = node-0
-          [[ "$DEPLOY_IMAGE" =~ ^iksok/test-nginx-app@sha256:[a-f0-9]{64}$ ]]
           kubectl --request-timeout=10s get nodes
           kubectl --request-timeout=10s auth can-i patch deployments -n test-app
 

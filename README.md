@@ -17,7 +17,8 @@ GitHub tag v1.0.0 → проверки → Docker Hub → runner node-0 → Kube
 
 Проверено 3 ноября 2026 года: три узла `Ready`, приложение — `2/2`,
 служба runner активна, подключена к GitHub и имеет доступ к Kubernetes.
-Workflow подготовлены; успешный запуск из GitHub Actions ещё требуется подтвердить.
+Первый push в `main` прошёл CI: образ опубликован в Docker Hub, оба Terraform-модуля
+прошли проверки. Релизный деплой проверяется отдельно ниже.
 
 | Узел | Роль | Внешний IP из inventory | Внутренний IP при обследовании |
 |---|---|---|---|
@@ -288,7 +289,7 @@ Repository secrets**.
 | `DOCKERHUB_USERNAME` | `iksok` |
 | `DOCKERHUB_TOKEN` | Docker Hub Access Token с правом записи |
 
-Владелец добавил оба секрета. Их работоспособность подтверждается первым запуском.
+Владелец добавил оба секрета; сборка и публикация образа в первом workflow успешны.
 Environment secrets не используются.
 
 Runner зарегистрирован для этого репозитория. Служба:
@@ -310,8 +311,9 @@ Kubeconfig уже настроен у `github-runner`; передавать ег
 
 ### Запуск и проверка
 
-После публикации файлов в `main` дождитесь успешного `Application CI/CD`
-во вкладке Actions. В Docker Hub появится тег `sha-…`.
+Первый [Application CI/CD на main](https://github.com/deadmorouse/diplom-netology/actions/runs/41612247682)
+успешно собрал, проверил и опубликовал образ для commit `4b787bb`.
+При следующих push результат проверяется во вкладке Actions, образ получает тег `sha-…`.
 Затем из checkout **именно `deadmorouse/diplom-netology`**:
 
 ```bash
@@ -351,6 +353,7 @@ Image должен иметь вид `iksok/test-nginx-app@sha256:…` и сов
 
 Workflow: [.github/workflows/terraform.yml](.github/workflows/terraform.yml).
 Оба модуля проходят `fmt`, `init -backend=false`, `validate` без облачных секретов.
+[Первый запуск проверок успешен](https://github.com/deadmorouse/diplom-netology/actions/runs/41612247670).
 Автоматизация основной инфраструктуры включается после настройки доступа к существующему state.
 
 Дополнительные Repository secrets:

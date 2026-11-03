@@ -186,4 +186,55 @@ GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownH
 python3 docs/commands/github-actions-status.py
 ```
 
+Результат раздела 14: main опубликован (commit `4b787bb`); Application CI/CD
+run `41612247682` успешен, Docker Hub принял secrets. Terraform validate обоих
+модулей успешен (run `41612247670`), infrastructure ожидаемо skipped.
+
+## 15. Первый релиз приложения v1.0.0
+
+Тег указывает на уже проверенный commit `4b787bb`. Его публикация запускает build,
+push образа и обновление Deployment nginx-app в namespace test-app через runner.
+
+```bash
+git -C /tmp/diploma-publish-20261103 tag v1.0.0 4b787bb3637a6c37ebdebd6aa533f7d2b314de3a
+GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/diploma-github-known-hosts -o ConnectTimeout=10' git -C /tmp/diploma-publish-20261103 push origin v1.0.0
+python3 docs/commands/github-actions-status.py
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=51.250.73.47 -o UserKnownHostsFile=/tmp/diploma-ssh-check-not7380c/known_hosts-all -o ConnectTimeout=7 ubuntu@62.84.125.162 'bash -s' < docs/commands/check-cicd-access.sh
+curl --fail --connect-timeout 5 --max-time 15 http://62.84.125.111:30126/
+```
+
+Результат раздела 15: образ v1.0.0 опубликован; run `41612588953` остановился
+в deploy на шаге Check runner and Kubernetes access, до изменения Deployment.
+
+## 16. Диагностика первого deploy
+
+Только выбранные строки Worker log и параметры HOME/KUBECONFIG; секреты и
+полное окружение не выводятся. Скрипт: `docs/commands/inspect-deploy-failure.sh`.
+
+```bash
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=51.250.73.47 -o UserKnownHostsFile=/tmp/diploma-ssh-check-not7380c/known_hosts-all -o ConnectTimeout=7 ubuntu@62.84.125.162 'bash -s' < docs/commands/inspect-deploy-failure.sh
+```
+
+## 17. Проверка значения digest в задании
+
+В скрипт раздела 16 добавлен вывод публичных image digest и ближайшего значения
+`DEPLOY_IMAGE`. Проверяется передача output между jobs; Kubernetes не изменяется.
+
+```bash
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=51.250.73.47 -o UserKnownHostsFile=/tmp/diploma-ssh-check-not7380c/known_hosts-all -o ConnectTimeout=7 ubuntu@62.84.125.162 'bash -s' < docs/commands/inspect-deploy-failure.sh
+```
+
+## 18. Исправление передачи image digest и релиз v1.0.1
+
+Полный image reference содержит DOCKERHUB_USERNAME, зарегистрированный как secret.
+Теперь между jobs передаётся только sha256:hash; repository name добавляется в deploy.
+Actionlint и shell-синтаксис проверены. Main и новый тег публикуются одним push;
+тег запускает полный цикл сборки/теста/публикации/деплоя. Старый тег не изменяется.
+
+```bash
+git -C /tmp/diploma-publish-20261103 tag v1.0.1
+GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/diploma-github-known-hosts -o ConnectTimeout=10' git -C /tmp/diploma-publish-20261103 push origin main v1.0.1
+python3 docs/commands/github-actions-status.py
+```
+
 <!-- NEXT COMMAND -->
